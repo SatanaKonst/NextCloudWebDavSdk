@@ -3,6 +3,7 @@
 
 namespace NextCloudWebDavSdk;
 
+use Sabre\HTTP;
 use Sabre\DAV\Client;
 use Sabre\DAV\Xml\Property\ResourceType;
 
@@ -12,10 +13,33 @@ class WebDav
 {
     public $client;
     protected $baseUrl;
+    protected $rootUrl;
+    protected $userSearchScope;
+    protected $selectProperties = [
+        '{DAV:}getlastmodified',
+        '{DAV:}getetag',
+        '{DAV:}getcontenttype',
+        '{DAV:}resourcetype',
+        '{DAV:}getcontentlength',
+        '{http://owncloud.org/ns}id',
+        '{http://owncloud.org/ns}fileid',
+        '{http://owncloud.org/ns}favorite',
+        '{http://owncloud.org/ns}comments-href',
+        '{http://owncloud.org/ns}comments-count',
+        '{http://owncloud.org/ns}comments-unread',
+        '{http://owncloud.org/ns}owner-id',
+        '{http://owncloud.org/ns}owner-display-name',
+        '{http://owncloud.org/ns}share-types',
+        '{http://owncloud.org/ns}checksums',
+        '{http://owncloud.org/ns}has-preview',
+        '{http://owncloud.org/ns}size',
+    ];
 
     public function __construct($host, $login, $pass)
     {
+        $this->rootUrl = "$host/remote.php/dav/";
         $this->baseUrl = "$host/remote.php/dav/files/$login/";
+        $this->userSearchScope = "/files/$login";
         $this->client = new Client(array(
             'baseUri' => $this->baseUrl,
             'userName' => $login,
@@ -30,73 +54,8 @@ class WebDav
      */
     public function getListingFolder($folder = '')
     {
-        $structures = $this->client->propFind(
-            $folder,
-            array(
-                '{DAV:}getlastmodified',
-                '{DAV:}getetag',
-                '{DAV:}getcontenttype',
-                '{DAV:}resourcetype',
-                '{DAV:}getcontentlength',
-                '{http://owncloud.org/ns}id',
-                '{http://owncloud.org/ns}fileid',
-                '{http://owncloud.org/ns}favorite',
-                '{http://owncloud.org/ns}comments-href',
-                '{http://owncloud.org/ns}comments-count',
-                '{http://owncloud.org/ns}comments-unread',
-                '{http://owncloud.org/ns}owner-id',
-                '{http://owncloud.org/ns}owner-display-name',
-                '{http://owncloud.org/ns}share-types',
-                '{http://owncloud.org/ns}checksums',
-                '{http://owncloud.org/ns}has-preview',
-                '{http://owncloud.org/ns}size',
-            ),
-            1
-        );
-
-        $result = array();
-        if (!empty($structures)) {
-            foreach ($structures as $key => $structure) {
-
-                $key = decodePath($key);
-                $parsepath = pathinfo($key);
-
-
-                $shareTypes = array();
-                if (is_array($structure['{http://owncloud.org/ns}share-types'])) {
-                    $shareTypes = array_column($structure['{http://owncloud.org/ns}share-types'], 'value');
-                }
-                if (is_object($structure['{DAV:}resourcetype'])) {
-                    $resourcetype = $structure['{DAV:}resourcetype']->getValue();
-                } else {
-                    $resourcetype = array();
-                }
-
-                $result[] = array(
-                    'path' => $key,
-                    'element-name' => $parsepath['filename'],
-                    'getlastmodified' => $structure['{DAV:}getlastmodified'],
-                    'getetag' => $structure['{DAV:}getetag'],
-                    'getcontenttype' => $structure['{DAV:}getcontenttype'],
-                    'resourcetype' => $resourcetype,
-                    'getcontentlength' => $structure['{DAV:}getcontentlength'],
-                    'id' => $structure['{http://owncloud.org/ns}id'],
-                    'fileid' => $structure['{http://owncloud.org/ns}fileid'],
-                    'favorite' => $structure['{http://owncloud.org/ns}favorite'],
-                    'comments-href' => $structure['{http://owncloud.org/ns}comments-href'],
-                    'comments-count' => $structure['{http://owncloud.org/ns}comments-count'],
-                    'comments-unread' => $structure['{http://owncloud.org/ns}comments-unread'],
-                    'owner-id' => $structure['{http://owncloud.org/ns}owner-id'],
-                    'owner-display-name' => $structure['{http://owncloud.org/ns}owner-display-name'],
-                    'share-types' => $shareTypes,
-                    'checksums' => $structure['{http://owncloud.org/ns}checksums'],
-                    'has-preview' => $structure['{http://owncloud.org/ns}has-preview'],
-                    'size' => $structure['{http://owncloud.org/ns}size'],
-                );
-
-            }
-        }
-        return $result;
+        $structures = $this->client->propFind($folder, $this->selectProperties, 1);
+        return $this->prepareStructureResponse($structures, $this->selectProperties);
     }
 
     /**
@@ -254,4 +213,161 @@ class WebDav
         return true;
     }
 
+    /**
+     * Поиск фалов и папок
+     *
+     * @param array $selectProperties
+     * @param $searchScope
+     * @param $searchScopeDepth
+     * @param array $searchWhere
+     * @param array $searchOrderBy
+     * @return array|bool
+     * @throws HTTP\ClientException
+     * @throws HTTP\ClientHttpException
+     */
+    function search(array $selectProperties, $searchScope, $searchScopeDepth, array $searchWhere, array $searchOrderBy)
+    {
+        if (empty($selectProperties)) {
+            $selectProperties = $this->selectProperties;
+        }
+        if (empty($searchScopeDepth)) {
+            $searchScopeDepth = 'infinity';
+        }
+        if (empty($searchScope)) {
+            $searchScope = '/';
+        }
+
+        $dom = new \DOMDocument('1.0', 'UTF-8');
+        $dom->formatOutput = true;
+        $searchrequest = $dom->createElementNS('DAV:', 'd:searchrequest');
+        $searchrequest->setAttributeNS('http://www.w3.org/2000/xmlns/' ,'xmlns:oc', 'http://owncloud.org/ns');
+        $basicsearch = $dom->createElement('d:basicsearch');
+
+        $select = $dom->createElement('d:select');
+        $prop = $dom->createElement('d:prop');
+        foreach ($selectProperties as $property) {
+            $prop->appendChild(self::createElementNodeProperty($property, $dom));
+        }
+        $basicsearch->appendChild($select)->appendChild($prop);
+
+        $from = $dom->createElement('d:from');
+        $scope = $dom->createElement('d:scope');
+        $scope->appendChild($dom->createElement('d:href', $this->userSearchScope . $searchScope));
+        $scope->appendChild($dom->createElement('d:depth', $searchScopeDepth));
+        $basicsearch->appendChild($from)->appendChild($scope);
+
+        $where = $dom->createElement('d:where');
+        foreach ($searchWhere as $property => $value) {
+            $operator = explode('::', $property);
+            if (count($operator) == 2) {
+                $operator = [
+                    'operator' => $operator[0],
+                    'property' => $operator[1],
+                ];
+            } else {
+                $operator = [
+                    'operator' => 'eq',
+                    'property' => $operator[0]
+                ];
+            }
+            $element = $dom->createElement('d:' . $operator['operator']);
+            $prop = $dom->createElement('d:prop');
+            $prop->appendChild(self::createElementNodeProperty($operator['property'], $dom));
+            $element->appendChild($prop);
+            $element->appendChild($dom->createElement('d:literal', $value));
+            $where->appendChild($element);
+        }
+        $basicsearch->appendChild($where);
+
+        $orderby = $dom->createElement('d:orderby');
+        foreach ($searchOrderBy as $property => $direction) {
+            $prop = $dom->createElement('d:prop');
+            $prop->appendChild(self::createElementNodeProperty($operator['property'], $dom));
+            $orderby->appendChild($prop);
+            $orderby->appendChild($dom->createElement('d:' . $direction));
+        }
+        $basicsearch->appendChild($orderby);
+
+        $dom->appendChild($searchrequest)->appendChild($basicsearch);
+        $body = $dom->saveXML();
+
+        $response = $this->client->send(new HTTP\Request(
+            'SEARCH',
+            $this->rootUrl,
+            ['Content-Type' => 'text/xml'],
+            $body
+        ));
+
+        if ((int)$response->getStatus() >= 400) {
+            return false;
+        }
+
+        $result = $this->client->parseMultiStatus($response->getBodyAsString());
+        $newResult = [];
+        foreach ($result as $href => $statusList) {
+            $newResult[$href] = isset($statusList[200]) ? $statusList[200] : [];
+        }
+
+        return $this->prepareStructureResponse($newResult, $selectProperties);
+    }
+
+    /**
+     * Создание DOM-элемента для вставки в xml-тело запроса
+     *
+     * @param $property
+     * @param \DOMDocument $dom
+     * @return \DOMElement
+     */
+    public function createElementNodeProperty($property, \DOMDocument $dom)
+    {
+        list($namespace, $elementName) = \Sabre\Xml\Service::parseClarkNotation($property);
+        switch ($namespace) {
+            case 'DAV:':
+                $element = $dom->createElement('d:' . $elementName);
+                break;
+            case 'http://owncloud.org/ns':
+                $element = $dom->createElement('oc:' . $elementName);
+                break;
+            default:
+                $element = $dom->createElementNS($namespace, 'x:' . $elementName);
+        }
+        return $element;
+    }
+
+    /**
+     * Преобразование массива с ответом в удобочитаемый вид
+     *
+     * @param array $response
+     * @param array $properties
+     * @return array
+     */
+    public function prepareStructureResponse(array $response, array $properties)
+    {
+        $structures = [];
+
+        foreach ($response as $path => $selectProperties) {
+            $path = decodePath($path);
+            $parsepath = pathinfo($path);
+
+            $structure = [
+                'path' => $path,
+                'element-name' => $parsepath['filename'],
+            ];
+            foreach ($selectProperties as $code => $value) {
+                if (in_array($code, $properties)) {
+                    list($namespace, $propertyCode) = \Sabre\Xml\Service::parseClarkNotation($code);
+                    if (is_object($value)) {
+                        $value = $value->getValue();
+                    } elseif (is_array($value)) {
+                        $value = array_column($value, 'value');
+                    }
+                    $structure[$propertyCode] = $value;
+                }
+            }
+
+            $structures[] = $structure;
+        }
+
+        return $structures;
+    }
 }

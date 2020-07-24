@@ -66,6 +66,24 @@ $response = $webDav->copyFileOrDirectory(
     '/path/file/to/destination'
 );
 
+###Поиск файлов и папок
+Выбираемые свойства искомых элементов  
+```$selectProperties = ['{DAV:}getlastmodified','{DAV:}getetag', ... ];```
+
+Область поиска относительно корневой папки пользователя  
+```$searchScope = '/path/to/destination/';```
+
+Уровень вложенности поиска  
+```$searchScopeDepth = 'infinity';```
+
+Условия поиска  
+```$searchWhere = ['eq::{http://owncloud.org/ns}fileid' => 999, ...]```
+
+Сортировка  
+```$searchOrderBy = ['{http://owncloud.org/ns}fileid' => 'ascending', ...]```
+
+```$response = $webDav->search($selectProperties, $searchScope, $searchScopeDepth, $searchWhere, $searchOrderBy);```
+
 ##Share##
 
 Документация по шарингу 
